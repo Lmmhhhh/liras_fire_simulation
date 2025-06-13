@@ -218,81 +218,23 @@ export function useFireSimulation(
 
         // ACTIVE 상태인 셀에서 확산
         if (cell.state === FIRE_STATES.ACTIVE) {
-          // 디버깅: 현재 셀 정보 출력
-          if (i % 10 === 0 && j % 10 === 0) { // 모든 셀 출력하면 너무 많아서
-            console.log(`[${i},${j}] 활성 화재:`, {
-              연료: fuelModelData?.[i]?.[j],
-              수분: fuelMoistureData?.[i]?.[j],
-              수분퍼센트: (fuelMoistureData?.[i]?.[j] || 0.1) * 100,
-              캐노피: canopyCoverData?.[i]?.[j],
-              강도: cell.intensity,
-              유형: cell.fireType
-            });
-          }
-
           // 기존 rothermel.js 사용하여 ROS 계산
           const cellData = {
             fuelModel: fuelModelData?.[i]?.[j] || 1,
-            moisture: (fuelMoistureData?.[i]?.[j] || 0.1) * 100, // fraction to percent (rothermel.js expects %)
-            slope: computeSlopeFn(i, j) // degrees
+            moisture: (fuelMoistureData?.[i]?.[j] || 0.1) * 100,
+            slope: computeSlopeFn(i, j)
           };
           
           // ROS 계산 (m/s)
           const headROS = computeRothermelROS(cellData, weather, cellSize);
           
-          // ROS 디버깅
-          if (headROS === 0) {
-            console.warn(`[${i},${j}] ROS가 0입니다!`, cellData);
+          // ROS가 너무 낮으면 기본값 사용
+          let adjustedROS = headROS;
+          if (headROS < 0.1 && cellData.fuelModel !== 0) {
+            adjustedROS = 0.1; // 최소 0.1 m/s
           }
 
-          // 강제 확산 테스트 코드 추가
-          if (!window.debugged) {
-            window.debugged = true; // 한 번만 실행
-            
-            console.log('=== 강제 확산 테스트 ===');
-            console.log('현재 위치:', i, j);
-            console.log('ROS:', headROS);
-            console.log('cellData:', cellData);
-            console.log('weather:', weather);
-            
-            // 타원형 화재 확산 매개변수 계산 (미리 계산)
-            const ellipse = ellipticalFireSpread(
-              headROS,
-              weather.windSpeed || 0,
-              deltaTime
-            );
-            console.log('타원:', ellipse);
-            
-            const maxDistance = Math.max(ellipse.a, ellipse.b);
-            const steps = Math.ceil(maxDistance / cellSize);
-            console.log('Steps:', steps);
-            
-            // 주변 9개 셀 강제 점화
-            for (let di = -1; di <= 1; di++) {
-              for (let dj = -1; dj <= 1; dj++) {
-                if (di === 0 && dj === 0) continue;
-                const ni = i + di;
-                const nj = j + dj;
-                
-                if (ni >= 0 && ni < size && nj >= 0 && nj < size) {
-                  console.log(`[${ni},${nj}] 상태:`, {
-                    현재상태: newGrid[ni][nj].state,
-                    연료: fuelModelData?.[ni]?.[nj],
-                    수분: (fuelMoistureData?.[ni]?.[nj] || 0.1) * 100
-                  });
-                  
-                  // 강제 점화
-                  if (newGrid[ni][nj].state === FIRE_STATES.UNBURNED) {
-                    newGrid[ni][nj].state = FIRE_STATES.IGNITING;
-                    newGrid[ni][nj].intensity = 50;
-                    console.log(`[${ni},${nj}] 강제 점화!`);
-                  }
-                }
-              }
-            }
-          }
-          
-          // 연료 하중 계산 (kg/m²) - fuelModelParams에서 가져오기
+          // 연료 하중 계산 (화재 강도 계산용)
           const fuelModel = cellData.fuelModel;
           const fuelLoad = fuelLoadToKgM2(
             (fuelModelParams[fuelModel]?.w1 || 0) + 
@@ -301,14 +243,14 @@ export function useFireSimulation(
             (fuelModelParams[fuelModel]?.wLive || 0)
           );
           
-          // 화재 강도 계산 (kW/m)
-          const intensity = firelineIntensity(headROS, fuelLoad);
-          newGrid[i][j].intensity = Math.min(100, intensity / 10); // 정규화
+          // 화재 강도 계산
+          const intensity = firelineIntensity(adjustedROS, fuelLoad);
+          newGrid[i][j].intensity = Math.min(100, intensity / 10);
           
           // 수관화 전이 체크
           if (canopyCoverData?.[i]?.[j] > 60) {
-            const canopyBaseHeight = 2.0; // 기본값 2m
-            const foliarMoisture = (fuelMoistureData?.[i]?.[j] || 0.1) * 1.2; // 엽 수분은 더 높음
+            const canopyBaseHeight = 2.0;
+            const foliarMoisture = (fuelMoistureData?.[i]?.[j] || 0.1) * 1.2;
             
             const crownFire = crownFireInitiation(
               intensity,
@@ -318,110 +260,149 @@ export function useFireSimulation(
             
             if (crownFire.willTransition && cell.fireType !== 'CROWN') {
               newGrid[i][j].fireType = 'CROWN';
-              newGrid[i][j].intensity = Math.min(100, intensity / 5); // 수관화는 더 강함
+              newGrid[i][j].intensity = Math.min(100, intensity / 5);
             }
           }
-          
+
           // 타원형 화재 확산 매개변수 계산
           const ellipse = ellipticalFireSpread(
-            headROS,
+            adjustedROS,
             weather.windSpeed || 0,
-            deltaTime
+            deltaTime * speed
           );
-          
-          // 최대 확산 거리 계산
+
+          // 최소 확산 거리 보장 (최소 1셀은 확산)
+          const minSpreadDistance = cellSize;
+          if (ellipse.a < minSpreadDistance) {
+            ellipse.a = minSpreadDistance;
+            ellipse.b = minSpreadDistance * 0.8;
+          }
+
+          // 확산 범위 계산
           const maxDistance = Math.max(ellipse.a, ellipse.b);
-          const steps = Math.ceil(maxDistance / cellSize);
-          
-          // 확산 시도 중 차단되는 경우 로그
-          let blockedCount = 0;
-          let attemptCount = 0;
-          
+          const steps = Math.max(1, Math.ceil(maxDistance / cellSize));
+
           // 주변 셀로 확산
+          let spreadCount = 0;
+          let attemptCount = 0;
+
           for (let di = -steps; di <= steps; di++) {
             for (let dj = -steps; dj <= steps; dj++) {
+              if (di === 0 && dj === 0) continue;
+              
               const ni = i + di;
               const nj = j + dj;
-
-              attemptCount++;
 
               // 경계 체크
               if (ni < 0 || ni >= size || nj < 0 || nj >= size) continue;
               if (newGrid[ni][nj].state !== FIRE_STATES.UNBURNED) continue;
 
+              attemptCount++;
+
               // 거리 계산
               const dx = dj * cellSize;
               const dy = di * cellSize;
               const distance = Math.hypot(dx, dy);
-              if (distance === 0) continue;
 
-              // 화재 중심에서 대상 셀까지의 각도 (바람 방향 기준)
+              // 화재 중심에서 대상 셀까지의 각도
               const cellAngle = Math.atan2(dy, dx);
               const relativeAngle = cellAngle - windRad;
               
               // 타원형 모델에서 해당 각도의 최대 확산 거리
               const maxSpreadDist = spreadDistanceAtAngle(ellipse, relativeAngle);
               
-              // 확산 범위 밖이면 스킵
-              if (distance > maxSpreadDist) continue;
+              // 확산 범위 체크 (여유 마진 추가)
+              if (distance > maxSpreadDist * 1.5) continue;
               
               // 대상 셀의 연료 확인
               const targetFuel = fuelModelData?.[ni]?.[nj];
-              if (!targetFuel || targetFuel === 0) {
-                blockedCount++;
-                if (blockedCount < 5) { // 처음 몇 개만 로그
-                  console.log(`[${ni},${nj}] 연료 없음`);
-                }
-                continue;
+              if (!targetFuel || targetFuel === 0) continue;
+              
+              // 연료 파라미터 확인
+              const targetFuelParams = fuelModelParams[targetFuel];
+              if (!targetFuelParams) {
+                // 지원되지 않는 연료 모델은 확산 허용
+                console.log(`연료 모델 ${targetFuel} 미지원, 기본값 사용`);
               }
               
-              // 대상 셀의 수분 확인 (수분 소멸점 체크)
-              const targetMoisture = (fuelMoistureData?.[ni]?.[nj] || 0.1) * 100; // fraction to percent
-              const targetMx = fuelModelParams[targetFuel]?.mExt || 30; // 이미 퍼센트
+              // 대상 셀의 수분 확인
+              const targetMoisture = (fuelMoistureData?.[ni]?.[nj] || 0.1) * 100;
+              const targetMx = targetFuelParams?.mExt || 30;
               
-              if (targetMoisture >= targetMx) {
-                blockedCount++;
-                if (blockedCount < 5) {
-                  console.log(`[${ni},${nj}] 수분 초과: ${targetMoisture}% >= ${targetMx}%`);
-                }
+              // 수분이 소멸점의 90% 이상이면 확산 어려움
+              if (targetMoisture >= targetMx * 0.9) {
                 continue;
               }
               
               // 경사 효과
               const targetElev = terrainData.elevation[ni][nj];
               const sourceElev = terrainData.elevation[i][j];
-              const slopeFactor = targetElev > sourceElev ? 1.2 : 0.9;
+              const elevDiff = targetElev - sourceElev;
+              
+              let slopeFactor = 1.0;
+              if (elevDiff > 0) {
+                // 상향 경사는 확산 촉진
+                slopeFactor = 1.0 + Math.min(0.5, elevDiff / 50);
+              } else {
+                // 하향 경사는 확산 억제
+                slopeFactor = Math.max(0.7, 1.0 + elevDiff / 100);
+              }
               
               // 거리 기반 확산 확률
-              const distanceRatio = distance / maxSpreadDist;
-              const probability = (1 - distanceRatio) * slopeFactor;
+              let probability = 0;
               
+              // 인접 셀 (8방향)은 높은 확률
+              if (Math.abs(di) <= 1 && Math.abs(dj) <= 1) {
+                probability = 0.8 * slopeFactor;
+                
+                // 수분 효과 적용
+                const moistureFactor = 1 - (targetMoisture / targetMx) * 0.5;
+                probability *= moistureFactor;
+              } else {
+                // 더 먼 셀은 거리에 따라 감소
+                const distanceRatio = distance / maxSpreadDist;
+                probability = (1 - distanceRatio) * slopeFactor * 0.5;
+                
+                // 수분 효과
+                const moistureFactor = 1 - (targetMoisture / targetMx) * 0.7;
+                probability *= moistureFactor;
+              }
+              
+              // 바람 방향 보너스
+              const windAlignment = Math.cos(relativeAngle);
+              if (windAlignment > 0 && weather.windSpeed > 2) {
+                probability *= (1 + windAlignment * 0.3);
+              }
+              
+              // 확률 제한
+              probability = Math.max(0, Math.min(1, probability));
+              
+              // 확산 시도
               if (Math.random() < probability) {
                 newGrid[ni][nj].state = FIRE_STATES.IGNITING;
-                newGrid[ni][nj].intensity = intensity / 20; // 초기 강도
+                newGrid[ni][nj].intensity = Math.max(10, cell.intensity * 0.8);
                 
-                // 수관화 전파
+                // 화재 유형 결정
                 if (cell.fireType === 'CROWN' && 
-                    canopyCoverData?.[ni]?.[nj] > 60 &&
-                    canopyCoverData?.[i]?.[j] > 60) {
+                    canopyCoverData?.[ni]?.[nj] > 50 && 
+                    canopyCoverData?.[i]?.[j] > 50 &&
+                    distance <= cellSize * 2) {
                   newGrid[ni][nj].fireType = 'CROWN';
                 } else {
                   newGrid[ni][nj].fireType = 'SURFACE';
                 }
+                
+                spreadCount++;
               }
             }
           }
 
-          if (attemptCount > 0 && blockedCount === attemptCount) {
-            console.warn(`[${i},${j}] 모든 확산 시도가 차단됨!`);
-          }
-
           // 점화원(Spotting) - 수관화일 때만
           if (cell.fireType === 'CROWN' && weather.windSpeed > 5) {
-            const canopyHeight = (canopyCoverData?.[i]?.[j] || 60) / 10; // 추정 높이
+            const canopyHeight = (canopyCoverData?.[i]?.[j] || 60) / 10;
             const spotDist = spottingDistance(intensity, weather.windSpeed, canopyHeight);
             
-            if (spotDist > 50 && Math.random() < 0.1) { // 50m 이상이고 10% 확률
+            if (spotDist > 50 && Math.random() < 0.1) {
               const spotCells = Math.floor(spotDist / cellSize);
               const spotAngle = windRad + (Math.random() - 0.5) * Math.PI / 6;
               
@@ -441,7 +422,7 @@ export function useFireSimulation(
           }
           
           // 화재 소화 조건
-          const burnDuration = cell.fireType === 'CROWN' ? 600 : 1200; // 초
+          const burnDuration = cell.fireType === 'CROWN' ? 600 : 1200;
           const burnTime = time - (cell.burnedTime || time);
           
           // 강도 감소
@@ -452,7 +433,7 @@ export function useFireSimulation(
           
           // 소화 조건
           const lowIntensity = newGrid[i][j].intensity < 5;
-          const precipitation = weather.precipitation > 2.5; // mm/hr
+          const precipitation = weather.precipitation > 2.5;
           const fuelDepleted = burnTime > burnDuration;
           
           if (lowIntensity || precipitation || fuelDepleted) {

@@ -17,7 +17,8 @@ function Toast({ message, type = 'info', onClose }) {
   const bgColors = {
     info: 'bg-blue-500',
     success: 'bg-green-500',
-    error: 'bg-red-500'
+    error: 'bg-red-500',
+    warning: 'bg-yellow-500'
   };
   
   const bgColor = bgColors[type] || 'bg-gray-700';
@@ -54,7 +55,7 @@ export default function FireSimulation() {
   // 토스트 메시지
   const [toast, setToast] = useState(null);
   
-  // 캐노피 표시 토글
+  // 표시 옵션
   const [showCanopy, setShowCanopy] = useState(false);
   const [showFuelMap, setShowFuelMap] = useState(false);
 
@@ -69,6 +70,7 @@ export default function FireSimulation() {
     size,
     setSpeed,
     addIgnitionPoint,
+    clearIgnitionPoints,
     startSimulation,
     stopSimulation,
     resetSimulation,
@@ -85,15 +87,18 @@ export default function FireSimulation() {
 
   // 캔버스 클릭 핸들러
   const handleCanvasClick = useCallback((e) => {
-    if (isRunning || !terrainData) return;
+    if (isRunning || !terrainData || !fuelModelData) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const scale = 5; // 캔버스 스케일
     const x = Math.floor((e.clientX - rect.left) / scale);
     const y = Math.floor((e.clientY - rect.top) / scale);
 
+    // 경계 체크
+    if (x < 0 || x >= size || y < 0 || y >= size) return;
+
     // 연료가 있는지 확인
-    const fuel = fuelModelData?.[y]?.[x];
+    const fuel = fuelModelData[y]?.[x];
     if (!fuel || fuel === 0) {
       setToast({
         message: '❌ 연료가 없는 지역입니다. 다른 곳을 선택하세요.',
@@ -106,12 +111,23 @@ export default function FireSimulation() {
     if (success) {
       // 발화점 추가/제거 시 피드백
       const isRemoval = ignitionPoints.some(p => p.x === x && p.y === y);
-      setToast({
-        message: isRemoval ? '발화점 제거됨' : '발화점 추가됨',
-        type: 'info'
-      });
+      
+      // 발화점 정보 표시
+      if (!isRemoval) {
+        const moisture = (fuelMoistureData?.[y]?.[x] || 0.1) * 100;
+        const canopy = canopyCoverData?.[y]?.[x] || 0;
+        setToast({
+          message: `🔥 발화점 추가 - 연료: ${fuel}, 수분: ${moisture.toFixed(1)}%, 수관: ${canopy}%`,
+          type: 'info'
+        });
+      } else {
+        setToast({
+          message: '발화점 제거됨',
+          type: 'info'
+        });
+      }
     }
-  }, [isRunning, terrainData, fuelModelData, addIgnitionPoint, ignitionPoints]);
+  }, [isRunning, terrainData, fuelModelData, fuelMoistureData, canopyCoverData, size, addIgnitionPoint, ignitionPoints]);
 
   // 시뮬레이션 시작 핸들러
   const handleStart = useCallback(() => {
@@ -120,6 +136,11 @@ export default function FireSimulation() {
       setToast({
         message: result.message || '시뮬레이션 시작 실패',
         type: 'error'
+      });
+    } else {
+      setToast({
+        message: '🔥 시뮬레이션 시작!',
+        type: 'success'
       });
     }
   }, [startSimulation]);
@@ -147,7 +168,7 @@ export default function FireSimulation() {
       const avgIntensity = stats.averageIntensity;
       
       // 강도가 너무 낮거나, 대부분 타버렸으면 확산 불가능
-      canSpread = avgIntensity > 20 && burnedPercentage < 90;
+      canSpread = avgIntensity > 10 && burnedPercentage < 95;
     }
     
     if (noActiveFire || longDuration || !canSpread) {
@@ -155,7 +176,7 @@ export default function FireSimulation() {
       
       let message = '🔥 시뮬레이션 종료! ';
       if (noActiveFire) {
-        message += `소실 면적: ${stats.burnedArea.toFixed(2)} ha`;
+        message += `총 소실 면적: ${stats.burnedArea.toFixed(2)} ha (${stats.burnedPercentage.toFixed(1)}%)`;
       } else if (longDuration) {
         message += '최대 시뮬레이션 시간 도달';
       } else if (!canSpread) {
@@ -172,6 +193,9 @@ export default function FireSimulation() {
   // 키보드 단축키
   useEffect(() => {
     const handleKeyPress = (e) => {
+      // 입력 필드에 포커스가 있으면 무시
+      if (e.target.tagName === 'INPUT') return;
+
       if (e.code === 'Space' && !isRunning && ignitionPoints.length > 0) {
         e.preventDefault();
         handleStart();
@@ -179,12 +203,20 @@ export default function FireSimulation() {
         stopSimulation();
       } else if (e.code === 'KeyR' && !isRunning) {
         resetSimulation();
+        setToast({ message: '시뮬레이션 초기화됨', type: 'info' });
+      } else if (e.code === 'KeyC' && !isRunning) {
+        clearIgnitionPoints();
+        setToast({ message: '발화점 모두 제거됨', type: 'info' });
+      } else if (e.code === 'KeyT') {
+        setShowCanopy(prev => !prev);
+      } else if (e.code === 'KeyF') {
+        setShowFuelMap(prev => !prev);
       }
     };
 
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [isRunning, ignitionPoints, handleStart, stopSimulation, resetSimulation]);
+  }, [isRunning, ignitionPoints, handleStart, stopSimulation, resetSimulation, clearIgnitionPoints]);
 
   // 통계 정보
   const stats = getSimulationStats();
@@ -317,6 +349,12 @@ export default function FireSimulation() {
                       {Math.floor(time / 3600)}시간 {Math.floor((time % 3600) / 60)}분
                     </span>
                   </div>
+                  <div className="flex justify-between text-xs mt-1">
+                    <span className="text-gray-600">발화점:</span>
+                    <span className="font-medium">
+                      {ignitionPoints.length}개
+                    </span>
+                  </div>
                 </div>
               </section>
             )}
@@ -339,24 +377,38 @@ export default function FireSimulation() {
                      '클릭하여 발화점 설정'}
                   </p>
                 </div>
-                <button
-                  onClick={() => setShowCanopy(!showCanopy)}
-                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                    showCanopy 
-                      ? 'bg-green-500 text-white' 
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  {showCanopy ? '🌳 수관 표시' : '🗺️ 지형만'}
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowCanopy(!showCanopy)}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      showCanopy 
+                        ? 'bg-green-500 text-white' 
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    {showCanopy ? '🌳 수관' : '🗺️ 지형'}
+                  </button>
+                  <button
+                    onClick={() => setShowFuelMap(!showFuelMap)}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      showFuelMap 
+                        ? 'bg-orange-500 text-white' 
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    {showFuelMap ? '🔥 연료' : '🗺️ 지형'}
+                  </button>
+                </div>
               </div>
               <div className="p-4">
                 <CanvasView
                   terrainData={terrainData}
+                  fuelModelData={showFuelMap ? fuelModelData : null}
                   fireGrid={fireGrid}
                   ignitionPoints={ignitionPoints}
-                  canopyCoverData={canopyCoverData}
+                  canopyCoverData={showCanopy ? canopyCoverData : null}
                   showCanopy={showCanopy}
+                  showFuelMap={showFuelMap}
                   onCanvasClick={handleCanvasClick}
                 />
               </div>
@@ -389,9 +441,13 @@ export default function FireSimulation() {
               발화점을 다시 클릭하면 제거됩니다.
             </p>
             {!isRunning && (
-              <p className="text-sm text-blue-800 mt-2">
-                ⌨️ 단축키: <strong>Space</strong> - 시작 | <strong>Esc</strong> - 정지 | <strong>R</strong> - 초기화
-              </p>
+              <div className="text-sm text-blue-800 mt-2">
+                <p>⌨️ 단축키:</p>
+                <ul className="ml-4 mt-1">
+                  <li><strong>Space</strong> - 시작 | <strong>Esc</strong> - 정지 | <strong>R</strong> - 초기화</li>
+                  <li><strong>C</strong> - 발화점 모두 제거 | <strong>T</strong> - 수관 표시 | <strong>F</strong> - 연료 표시</li>
+                </ul>
+              </div>
             )}
             {isRunning && (
               <p className="text-sm text-blue-800 mt-2">
