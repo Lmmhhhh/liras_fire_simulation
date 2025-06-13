@@ -1,4 +1,4 @@
-// src/utils/rothermel.js (개선된 버전)
+// src/utils/rothermel.js
 import { fuelModelParams, universalParams } from './fuelModelParams';
 
 export function computeRothermelROS(cell, weather, cellSize) {
@@ -118,10 +118,10 @@ export function computeRothermelROS(cell, weather, cellSize) {
   // Convert to m/s: 1 ft/min = 0.00508 m/s
   let ros = ros_ft_min * 0.00508;
   
-  // 최소 ROS 보장 (연료가 있는 경우)
-  if (ros < 0.05 && modelIdx !== 0) {
-    console.log(`ROS가 너무 낮음 (${ros.toFixed(3)} m/s), 최소값 0.05 m/s 적용`);
-    ros = 0.05;
+  // 최소 ROS 보장 (연료가 있는 경우) - 증가된 최소값
+  if (ros < 0.1 && modelIdx !== 0) {
+    console.log(`ROS가 너무 낮음 (${ros.toFixed(3)} m/s), 최소값 0.1 m/s 적용`);
+    ros = 0.1;
   }
   
   return Math.max(0, ros);

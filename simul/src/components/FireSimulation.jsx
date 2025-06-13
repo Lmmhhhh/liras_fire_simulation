@@ -163,12 +163,14 @@ export default function FireSimulation() {
     // 확산 가능성 체크
     let canSpread = false;
     if (stats && stats.active > 0) {
-      // 주변에 확산 가능한 연료가 있는지 간단히 체크
       const burnedPercentage = stats.burnedPercentage;
       const avgIntensity = stats.averageIntensity;
       
-      // 강도가 너무 낮거나, 대부분 타버렸으면 확산 불가능
-      canSpread = avgIntensity > 10 && burnedPercentage < 95;
+      // 조건을 더 관대하게 수정
+      // 1) 평균 강도가 5 이상이거나
+      // 2) 활성 화재가 10개 이상이거나
+      // 3) 아직 20% 미만만 탔으면 계속 진행
+      canSpread = avgIntensity > 5 || stats.active > 10 || burnedPercentage < 20;
     }
     
     if (noActiveFire || longDuration || !canSpread) {
