@@ -102,13 +102,15 @@ export function useDataManagement() {
     try {
       setFilenames(prev => ({ ...prev, dem: file.name }));
       const text = await file.text();
-      const { data, nrows, cellSize } = parseAscFile(text);
+      const { data, nrows, ncols, cellSize } = parseAscFile(text);
       setTerrainData({ 
         elevation: data, 
-        size: nrows, 
+        size: Math.min(nrows, ncols), // 정사각형 크기 (시뮬레이션용)
+        rows: nrows, // 실제 행 수
+        cols: ncols, // 실제 열 수
         cellSize: cellSize 
       });
-      console.log(`DEM 로드 완료: ${nrows}x${nrows}, 셀 크기: ${cellSize}m`);
+      console.log(`DEM 로드 완료: ${nrows}×${ncols}, 셀 크기: ${cellSize}m`);
     } catch (error) {
       console.error('DEM 파일 업로드 오류:', error);
       // 에러 처리 로직 추가 가능
@@ -123,7 +125,7 @@ export function useDataManagement() {
     try {
       setFilenames(prev => ({ ...prev, fuel: file.name }));
       const text = await file.text();
-      const { data } = parseAscFile(text, terrainData.size);
+      const { data } = parseAscFile(text);  // 실제 크기 그대로 사용
       
       // 연료 모델 검증 및 매핑
       const validatedData = validateAndMapFuelData(data);

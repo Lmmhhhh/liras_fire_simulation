@@ -90,15 +90,32 @@ export default function FireSimulation() {
     if (isRunning || !terrainData || !fuelModelData) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
-    const scale = 5; // 캔버스 스케일
+    
+    // CanvasView에서 전달한 scale 사용
+    const scale = e.currentTarget.scale;
+    if (!scale) {
+      console.error('Scale 정보가 없습니다');
+      return;
+    }
+    
     const x = Math.floor((e.clientX - rect.left) / scale);
     const y = Math.floor((e.clientY - rect.top) / scale);
 
-    // 경계 체크
-    if (x < 0 || x >= size || y < 0 || y >= size) return;
+    console.log('발화점 클릭 시도:', { x, y, scale });
+
+    // 경계 체크 - 실제 데이터 크기 사용
+    const rows = terrainData?.elevation?.length || terrainData?.rows || terrainData?.size || 0;
+    const cols = terrainData?.elevation?.[0]?.length || terrainData?.cols || terrainData?.size || 0;
+    
+    if (x < 0 || x >= cols || y < 0 || y >= rows) {
+      console.log('경계 밖 클릭:', { x, y, cols, rows });
+      return;
+    }
 
     // 연료가 있는지 확인
     const fuel = fuelModelData[y]?.[x];
+    console.log('연료 확인:', { x, y, fuel });
+    
     if (!fuel || fuel === 0) {
       setToast({
         message: '❌ 연료가 없는 지역입니다. 다른 곳을 선택하세요.',
@@ -108,6 +125,8 @@ export default function FireSimulation() {
     }
 
     const success = addIgnitionPoint(x, y);
+    console.log('발화점 추가 결과:', success);
+    
     if (success) {
       // 발화점 추가/제거 시 피드백
       const isRemoval = ignitionPoints.some(p => p.x === x && p.y === y);
@@ -117,7 +136,7 @@ export default function FireSimulation() {
         const moisture = (fuelMoistureData?.[y]?.[x] || 0.1) * 100;
         const canopy = canopyCoverData?.[y]?.[x] || 0;
         setToast({
-          message: `🔥 발화점 추가 - 연료: ${fuel}, 수분: ${moisture.toFixed(1)}%, 수관: ${canopy}%`,
+          message: `🔥 발화점 추가 [${x},${y}] - 연료: ${fuel}, 수분: ${moisture.toFixed(1)}%, 수관: ${canopy}%`,
           type: 'info'
         });
       } else {
@@ -127,7 +146,7 @@ export default function FireSimulation() {
         });
       }
     }
-  }, [isRunning, terrainData, fuelModelData, fuelMoistureData, canopyCoverData, size, addIgnitionPoint, ignitionPoints]);
+  }, [isRunning, terrainData, fuelModelData, fuelMoistureData, canopyCoverData, addIgnitionPoint, ignitionPoints]);
 
   // 시뮬레이션 시작 핸들러
   const handleStart = useCallback(() => {
@@ -150,47 +169,8 @@ export default function FireSimulation() {
     setManualWeather(prev => ({ ...prev, [field]: value }));
   }, []);
 
-  // 진화 완료 체크 (개선된 로직)
-  useEffect(() => {
-    if (!isRunning || !fireGrid) return;
-
-    const stats = getSimulationStats();
-    
-    // 종료 조건들
-    const noActiveFire = stats && stats.active === 0;
-    const longDuration = time > 86400; // 24시간 이상
-    
-    // 확산 가능성 체크
-    let canSpread = false;
-    if (stats && stats.active > 0) {
-      const burnedPercentage = stats.burnedPercentage;
-      const avgIntensity = stats.averageIntensity;
-      
-      // 조건을 더 관대하게 수정
-      // 1) 평균 강도가 5 이상이거나
-      // 2) 활성 화재가 10개 이상이거나
-      // 3) 아직 20% 미만만 탔으면 계속 진행
-      canSpread = avgIntensity > 5 || stats.active > 10 || burnedPercentage < 20;
-    }
-    
-    if (noActiveFire || longDuration || !canSpread) {
-      stopSimulation();
-      
-      let message = '🔥 시뮬레이션 종료! ';
-      if (noActiveFire) {
-        message += `총 소실 면적: ${stats.burnedArea.toFixed(2)} ha (${stats.burnedPercentage.toFixed(1)}%)`;
-      } else if (longDuration) {
-        message += '최대 시뮬레이션 시간 도달';
-      } else if (!canSpread) {
-        message += '화재 확산 중지 (자연 차단)';
-      }
-      
-      setToast({
-        message,
-        type: 'success'
-      });
-    }
-  }, [fireGrid, isRunning, stopSimulation, getSimulationStats, time]);
+  // 진화 완료 체크 제거 - 확산만 관찰
+  // 시뮬레이션은 수동으로만 종료
 
   // 키보드 단축키
   useEffect(() => {
@@ -343,12 +323,12 @@ export default function FireSimulation() {
                   </div>
                 </div>
                 
-                {/* 시뮬레이션 시간 */}
+                {/* 시뮬레이션 시간 및 날씨 */}
                 <div className="mt-3 pt-3 border-t border-gray-200">
                   <div className="flex justify-between text-xs">
                     <span className="text-gray-600">경과 시간:</span>
                     <span className="font-medium">
-                      {Math.floor(time / 3600)}시간 {Math.floor((time % 3600) / 60)}분
+                      {Math.floor(time / 3600)}시간 {Math.floor((time % 3600) / 60)}분 {Math.floor(time % 60)}초
                     </span>
                   </div>
                   <div className="flex justify-between text-xs mt-1">
@@ -357,6 +337,22 @@ export default function FireSimulation() {
                       {ignitionPoints.length}개
                     </span>
                   </div>
+                  {currentWeather && (
+                    <>
+                      <div className="flex justify-between text-xs mt-1">
+                        <span className="text-gray-600">풍속:</span>
+                        <span className="font-medium">
+                          {currentWeather.windSpeed} m/s
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs mt-1">
+                        <span className="text-gray-600">풍향:</span>
+                        <span className="font-medium">
+                          {currentWeather.windDirection}°
+                        </span>
+                      </div>
+                    </>
+                  )}
                 </div>
               </section>
             )}

@@ -32,7 +32,9 @@ export function useFireSimulation(
 
   // 메타 데이터
   const cellSize = terrainData?.cellSize || 30;
-  const size = terrainData?.size || 0;
+  const rows = terrainData?.elevation?.length || terrainData?.rows || terrainData?.size || 0;
+  const cols = terrainData?.elevation?.[0]?.length || terrainData?.cols || terrainData?.size || 0;
+  const size = terrainData?.size || Math.min(rows, cols); // 시뮬레이션용 정사각형 크기
 
   // 경사 계산 함수 메모이제이션
   const computeSlopeFn = useMemo(() => {
@@ -40,12 +42,12 @@ export function useFireSimulation(
     return computeSlope(terrainData.elevation, cellSize);
   }, [terrainData, cellSize]);
 
-  // 격자 초기화
+  // 격자 초기화 - 실제 크기 사용
   const initializeGrid = useCallback(() => {
-    if (!size) return null;
+    if (!rows || !cols) return null;
     
-    const grid = Array.from({ length: size }, () =>
-      Array.from({ length: size }, () => ({
+    const grid = Array.from({ length: rows }, () =>
+      Array.from({ length: cols }, () => ({
         state: FIRE_STATES.UNBURNED,
         intensity: 0,
         burnedTime: null,
@@ -54,11 +56,20 @@ export function useFireSimulation(
     );
     
     return grid;
-  }, [size]);
+  }, [rows, cols]);
 
   // 발화점 추가/제거
   const addIgnitionPoint = useCallback((x, y) => {
-    if (x < 0 || x >= size || y < 0 || y >= size) return false;
+    // 실제 데이터 크기 확인
+    const currentRows = terrainData?.elevation?.length || terrainData?.rows || size || 0;
+    const currentCols = terrainData?.elevation?.[0]?.length || terrainData?.cols || size || 0;
+    
+    console.log('addIgnitionPoint 호출:', { x, y, rows: currentRows, cols: currentCols });
+    
+    if (x < 0 || x >= currentCols || y < 0 || y >= currentRows) {
+      console.log('경계 밖:', { x, y, cols: currentCols, rows: currentRows });
+      return false;
+    }
     
     setIgnitionPoints(prev => {
       const exists = prev.some(p => p.x === x && p.y === y);
@@ -70,7 +81,7 @@ export function useFireSimulation(
     });
     
     return true;
-  }, [size]);
+  }, [terrainData, size]);
 
   // 발화점 초기화
   const clearIgnitionPoints = useCallback(() => {
@@ -178,8 +189,32 @@ export function useFireSimulation(
   // 현재 날씨 정보 가져오기
   const getCurrentWeather = useCallback(() => {
     if (weatherData && weatherData.length > 0) {
-      const hourIndex = Math.min(Math.floor(time / 3600), weatherData.length - 1);
-      return weatherData[hourIndex];
+      // 시간을 시간 단위로 변환 (3600초 = 1시간)
+      const currentHour = Math.floor(time / 3600);
+      const weatherIndex = Math.min(currentHour, weatherData.length - 1);
+      
+      const weather = weatherData[weatherIndex];
+      
+      // 디버깅 - 날씨 변화 로그
+      if (!window.lastWeatherHour || window.lastWeatherHour !== currentHour) {
+        window.lastWeatherHour = currentHour;
+        console.log(`날씨 업데이트 [${currentHour}시간째]:`, {
+          시간: `${weather.day}일 ${weather.hour}:00`,
+          온도: weather.temperature + '°C',
+          습도: weather.humidity + '%',
+          풍속: weather.windSpeed + 'm/s',
+          풍향: weather.windDirection + '°',
+          강수: weather.precipitation + 'mm'
+        });
+      }
+      
+      return {
+        temperature: weather.temperature,
+        humidity: weather.humidity,
+        windSpeed: weather.windSpeed,
+        windDirection: weather.windDirection,
+        precipitation: weather.precipitation
+      };
     }
     return manualWeather;
   }, [weatherData, manualWeather, time]);
@@ -219,7 +254,7 @@ export function useFireSimulation(
       });
     });
 
-    const totalCells = size * size;
+    const totalCells = rows * cols;
     const burnedArea = (burned + active) * cellSize * cellSize / 10000; // hectares
 
     return {
@@ -234,7 +269,7 @@ export function useFireSimulation(
       crownFire,
       crownFirePercentage: active > 0 ? (crownFire / active) * 100 : 0
     };
-  }, [fireGrid, size, cellSize]);
+  }, [fireGrid, rows, cols, cellSize]);
 
   // 화재 확산 로직 - Rothermel 모델 기반
   const spreadFire = useCallback((currentGrid, deltaTime) => {
@@ -259,8 +294,8 @@ export function useFireSimulation(
     }
 
     // 모든 셀 순회
-    for (let i = 0; i < size; i++) {
-      for (let j = 0; j < size; j++) {
+    for (let i = 0; i < rows; i++) {
+      for (let j = 0; j < cols; j++) {
         const cell = currentGrid[i][j];
         
         // IGNITING 상태를 ACTIVE로 전환
@@ -347,7 +382,7 @@ export function useFireSimulation(
               const nj = j + dj;
 
               // 경계 체크
-              if (ni < 0 || ni >= size || nj < 0 || nj >= size) continue;
+              if (ni < 0 || ni >= rows || nj < 0 || nj >= cols) continue;
               if (newGrid[ni][nj].state !== FIRE_STATES.UNBURNED) continue;
 
               attemptCount++;
@@ -474,7 +509,7 @@ export function useFireSimulation(
               const spotI = i + Math.round(Math.sin(spotAngle) * spotCells);
               const spotJ = j + Math.round(Math.cos(spotAngle) * spotCells);
               
-              if (spotI >= 0 && spotI < size && spotJ >= 0 && spotJ < size) {
+              if (spotI >= 0 && spotI < rows && spotJ >= 0 && spotJ < cols) {
                 const spotFuel = fuelModelData?.[spotI]?.[spotJ];
                 if (spotFuel && spotFuel > 0 && 
                     newGrid[spotI][spotJ].state === FIRE_STATES.UNBURNED) {
@@ -486,25 +521,9 @@ export function useFireSimulation(
             }
           }
           
-          // 화재 소화 조건 (더 늦게 소화되도록)
-          const burnDuration = cell.fireType === 'CROWN' ? 900 : 1800; // 600->900, 1200->1800
-          const burnTime = time - (cell.burnedTime || time);
+          // 화재 소화 조건 제거 - 확산만 보기
+          // 강도는 유지만 하고 소화시키지 않음
           
-          // 강도 감소 (더 늦게 시작)
-          if (burnTime > burnDuration * 0.85) { // 0.7 -> 0.85
-            const decayRate = cell.fireType === 'CROWN' ? 1.5 : 0.5; // 2->1.5, 1->0.5
-            newGrid[i][j].intensity = Math.max(0, cell.intensity - decayRate);
-          }
-          
-          // 소화 조건 (더 엄격하게)
-          const lowIntensity = newGrid[i][j].intensity < 2; // 5 -> 2
-          const precipitation = weather.precipitation > 5; // 2.5 -> 5
-          const fuelDepleted = burnTime > burnDuration * 1.2;
-          
-          if (lowIntensity || precipitation || fuelDepleted) {
-            newGrid[i][j].state = FIRE_STATES.BURNED;
-            newGrid[i][j].intensity = 0;
-          }
         }
       }
     }
@@ -532,7 +551,7 @@ export function useFireSimulation(
     }
 
     return newGrid;
-  }, [terrainData, getCurrentWeather, fuelModelData, fuelMoistureData, canopyCoverData, size, cellSize, computeSlopeFn, time, getSimulationStats, speed]);
+  }, [terrainData, getCurrentWeather, fuelModelData, fuelMoistureData, canopyCoverData, rows, cols, cellSize, computeSlopeFn, time, getSimulationStats, speed]);
 
   // 애니메이션 루프
   useEffect(() => {
@@ -545,7 +564,8 @@ export function useFireSimulation(
       const deltaTime = (currentTime - lastTime) / 1000; // seconds
       lastTime = currentTime;
 
-      // 시간 업데이트
+      // 시간 업데이트 (실시간과 동일하게 - 1초 = 1초)
+      // 속도 조절로 빠르게 진행 가능
       setTime(t => t + deltaTime * speed);
 
       // 화재 확산
@@ -575,6 +595,8 @@ export function useFireSimulation(
     // 메타 정보
     cellSize,
     size,
+    rows,
+    cols,
     
     // 제어 함수
     setSpeed,
